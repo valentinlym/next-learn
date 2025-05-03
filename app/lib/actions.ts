@@ -1,9 +1,11 @@
 'use server';
 
 import { z } from 'zod';
+import postgres from 'postgres';
 import { revalidatePath } from 'next/cache';
 import { redirect } from 'next/navigation';
-import postgres from 'postgres';
+import { signIn } from '@/auth';
+import { AuthError } from 'next-auth';
 
 const sql = postgres(process.env.POSTGRES_URL!, { ssl: 'require' });
 
@@ -12,7 +14,8 @@ const FormSchema = z.object({
     customerId: z.string({
         invalid_type_error: 'Please select a customer.',
     }),
-    amount: z.coerce.number()
+    amount: z.coerce
+        .number()
         .gt(0, { message: 'Please enter an amount greater than $0.' }),
     status: z.enum(['pending', 'paid'], {
         invalid_type_error: 'Please select an invoice status.',
@@ -20,9 +23,8 @@ const FormSchema = z.object({
     date: z.string(),
 });
 
-// Use Zod to update the expected types
-const UpdateInvoice = FormSchema.omit({ id: true, date: true });
 const CreateInvoice = FormSchema.omit({ id: true, date: true });
+const UpdateInvoice = FormSchema.omit({ date: true, id: true });
 
 export type State = {
     errors?: {
@@ -34,7 +36,7 @@ export type State = {
 };
 
 export async function createInvoice(prevState: State, formData: FormData) {
-    // Validate form using Zod
+    // Validate form fields using Zod
     const validatedFields = CreateInvoice.safeParse({
         customerId: formData.get('customerId'),
         amount: formData.get('amount'),
@@ -57,12 +59,11 @@ export async function createInvoice(prevState: State, formData: FormData) {
     // Insert data into the database
     try {
         await sql`
-        INSERT INTO invoices (customer_id, amount, status, date)
-        VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
-      `;
+      INSERT INTO invoices (customer_id, amount, status, date)
+      VALUES (${customerId}, ${amountInCents}, ${status}, ${date})
+    `;
     } catch (error) {
         // If a database error occurs, return a more specific error.
-        console.log(error);
         return {
             message: 'Database Error: Failed to Create Invoice.',
         };
@@ -96,12 +97,11 @@ export async function updateInvoice(
 
     try {
         await sql`
-        UPDATE invoices
-        SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
-        WHERE id = ${id}
-      `;
+      UPDATE invoices
+      SET customer_id = ${customerId}, amount = ${amountInCents}, status = ${status}
+      WHERE id = ${id}
+    `;
     } catch (error) {
-        console.log(error);
         return { message: 'Database Error: Failed to Update Invoice.' };
     }
 
@@ -110,8 +110,25 @@ export async function updateInvoice(
 }
 
 export async function deleteInvoice(id: string) {
-    throw new Error('Failed to Delete Invoice');
-
     await sql`DELETE FROM invoices WHERE id = ${id}`;
     revalidatePath('/dashboard/invoices');
+}
+
+export async function authenticate(
+    prevState: string | undefined,
+    formData: FormData,
+) {
+    try {
+        await signIn('credentials', formData);
+    } catch (error) {
+        if (error instanceof AuthError) {
+            switch (error.type) {
+                case 'CredentialsSignin':
+                    return 'Invalid credentials.';
+                default:
+                    return 'Something went wrong.';
+            }
+        }
+        throw error;
+    }
 }
